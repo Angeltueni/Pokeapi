@@ -1,16 +1,18 @@
+import type { PersonajeDragonBall } from '@/context/DragonBallContext';
+
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 
-export type PersonajeDragonBall = {
-  id: number;
-  nombre: string;
-  imagen: string;
-  raza: string;
-  ki: string;
-  descripcion: string;
-};
+export async function obtenerPersonajeDragonBall(
+  nombre: string
+): Promise<PersonajeDragonBall> {
+  const respuesta = await fetch(`${API_URL}/dragonball`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ nombre }),
+  });
 
-export async function obtenerPersonajeDragonBall(): Promise<PersonajeDragonBall> {
-  const respuesta = await fetch(`${API_URL}/dragonball`);
   const datos = await respuesta.json();
 
   if (!respuesta.ok) {

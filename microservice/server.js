@@ -48,16 +48,42 @@ app.post('/pokemon', async (req, res) => {
   }
 });
 
-app.get('/dragonball', async (req, res) => {
-  try {
-    const id = Math.floor(Math.random() * 58) + 1;
-    const respuesta = await fetch(`https://dragonball-api.com/api/characters/${id}`);
+app.post('/dragonball', async (req, res) => {
+  const nombre = String(req.body.nombre || '').trim();
 
-    if (!respuesta.ok) {
+  if (!nombre) {
+    return res.status(400).json({ mensaje: 'Debes enviar el nombre de un personaje' });
+  }
+
+  try {
+    const respuestaBusqueda = await fetch(
+      `https://dragonball-api.com/api/characters?name=${encodeURIComponent(nombre)}`
+    );
+
+    if (!respuestaBusqueda.ok) {
       return res.status(404).json({ mensaje: 'Personaje no encontrado' });
     }
 
-    const datos = await respuesta.json();
+    const resultadoBusqueda = await respuestaBusqueda.json();
+    const encontrado = Array.isArray(resultadoBusqueda)
+      ? resultadoBusqueda[0]
+      : resultadoBusqueda.items?.[0];
+
+    if (!encontrado) {
+      return res.status(404).json({ mensaje: 'Personaje no encontrado' });
+    }
+
+    const respuestaDetalle = await fetch(
+      `https://dragonball-api.com/api/characters/${encontrado.id}`
+    );
+
+    const datos = respuestaDetalle.ok
+      ? await respuestaDetalle.json()
+      : encontrado;
+
+    const transformaciones = Array.isArray(datos.transformations)
+      ? datos.transformations
+      : [];
 
     const razasEnEspanol = {
       Saiyan: 'Saiyajin',
@@ -72,13 +98,23 @@ app.get('/dragonball', async (req, res) => {
       'Frieza Race': 'Raza de Freezer',
     };
 
+    const generosEnEspanol = {
+      Male: 'Masculino',
+      Female: 'Femenino',
+      Unknown: 'Desconocido',
+    };
+
     const personaje = {
       id: datos.id,
       nombre: datos.name,
-      imagen: datos.image,
-      raza: razasEnEspanol[datos.race] || datos.race,
-      ki: datos.ki,
-      descripcion: datos.description,
+      imagen: datos.image || null,
+      imagen2: transformaciones[0]?.image || datos.image || null,
+      imagen3: transformaciones[1]?.image || transformaciones[0]?.image || datos.image || null,
+      raza: razasEnEspanol[datos.race] || datos.race || 'Desconocida',
+      ki: datos.ki || 'Sin dato',
+      genero: generosEnEspanol[datos.gender] || datos.gender || 'Sin dato',
+      afiliacion: datos.affiliation || 'Sin dato',
+      descripcion: datos.description || 'Sin descripción',
     };
 
     res.json(personaje);
