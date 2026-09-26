@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Image,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -11,9 +12,14 @@ import {
 import { router } from 'expo-router';
 
 import { usePokemon } from '@/context/PokemonContext';
+import { obtenerPersonajeDragonBall, type PersonajeDragonBall } from '@/services/dragonBallApi';
 
 export default function Index() {
   const [texto, setTexto] = useState('');
+  const [personaje, setPersonaje] = useState<PersonajeDragonBall | null>(null);
+  const [cargandoDragonBall, setCargandoDragonBall] = useState(false);
+  const [errorDragonBall, setErrorDragonBall] = useState('');
+
   const { pokemon, cargando, error, buscarPokemon, anterior, siguiente } = usePokemon();
 
   const buscar = async () => {
@@ -24,8 +30,21 @@ export default function Index() {
     }
   };
 
+  const cargarDragonBall = async () => {
+    try {
+      setCargandoDragonBall(true);
+      setErrorDragonBall('');
+      const datos = await obtenerPersonajeDragonBall();
+      setPersonaje(datos);
+    } catch (e) {
+      setErrorDragonBall(e instanceof Error ? e.message : 'Ocurrió un error');
+    } finally {
+      setCargandoDragonBall(false);
+    }
+  };
+
   return (
-    <View style={styles.pantalla}>
+    <ScrollView contentContainerStyle={styles.pantalla}>
       <View style={styles.encabezado}>
         <View style={styles.circuloGrande} />
         <View style={styles.circuloPequeno} />
@@ -54,13 +73,37 @@ export default function Index() {
           <ActivityIndicator size="large" />
         ) : pokemon ? (
           <>
-            <Image source={{ uri: pokemon.imagen }} style={styles.imagen} />
+            {pokemon.imagen ? (
+              <Image source={{ uri: pokemon.imagen }} style={styles.imagen} />
+            ) : (
+              <Text>Sin imagen</Text>
+            )}
             <Text style={styles.nombre}>{pokemon.nombre}</Text>
           </>
         ) : (
           <Text style={styles.mensaje}>Busca un Pokémon para comenzar</Text>
         )}
       </View>
+
+      {pokemon ? (
+        <View style={styles.filaImagenes}>
+          <View style={styles.tarjetaPequena}>
+            {pokemon.imagen2 ? (
+              <Image source={{ uri: pokemon.imagen2 }} style={styles.imagenPequena} />
+            ) : (
+              <Text style={styles.sinImagen}>Sin imagen</Text>
+            )}
+          </View>
+
+          <View style={styles.tarjetaPequena}>
+            {pokemon.imagen3 ? (
+              <Image source={{ uri: pokemon.imagen3 }} style={styles.imagenPequena} />
+            ) : (
+              <Text style={styles.sinImagen}>Sin imagen</Text>
+            )}
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.botonesCambio}>
         <Pressable
@@ -87,16 +130,38 @@ export default function Index() {
       >
         <Text style={styles.textoDatos}>Ver datos</Text>
       </Pressable>
-    </View>
+
+      <Pressable style={styles.botonDragonBall} onPress={cargarDragonBall}>
+        <Text style={styles.textoDatos}>Consultar otra API</Text>
+      </Pressable>
+
+      {cargandoDragonBall ? (
+        <ActivityIndicator size="large" style={styles.cargandoExtra} />
+      ) : null}
+
+      {errorDragonBall ? <Text style={styles.error}>{errorDragonBall}</Text> : null}
+
+      {personaje ? (
+        <View style={styles.tarjetaDragonBall}>
+          <Text style={styles.tituloDragonBall}>Dragon Ball API</Text>
+          <Image source={{ uri: personaje.imagen }} style={styles.imagenDragonBall} />
+          <Text style={styles.nombreDragonBall}>{personaje.nombre}</Text>
+          <Text style={styles.datoDragonBall}>Raza: {personaje.raza}</Text>
+          <Text style={styles.datoDragonBall}>Ki: {personaje.ki}</Text>
+          <Text style={styles.descripcion}>{personaje.descripcion}</Text>
+        </View>
+      ) : null}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   pantalla: {
-    flex: 1,
+    flexGrow: 1,
     backgroundColor: '#f2f2f2',
     padding: 22,
     paddingTop: 55,
+    paddingBottom: 40,
   },
   encabezado: {
     height: 85,
@@ -153,6 +218,7 @@ const styles = StyleSheet.create({
   },
   error: {
     color: '#b00020',
+    marginTop: 8,
     marginBottom: 8,
   },
   tarjetaImagen: {
@@ -160,14 +226,14 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#333333',
     borderRadius: 12,
-    minHeight: 330,
+    minHeight: 310,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 15,
   },
   imagen: {
-    width: 250,
-    height: 250,
+    width: 240,
+    height: 240,
     resizeMode: 'contain',
   },
   nombre: {
@@ -179,6 +245,29 @@ const styles = StyleSheet.create({
     color: '#666666',
     fontSize: 16,
     textAlign: 'center',
+  },
+  filaImagenes: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+  },
+  tarjetaPequena: {
+    width: '48%',
+    height: 150,
+    backgroundColor: 'white',
+    borderWidth: 2,
+    borderColor: '#46aee8',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imagenPequena: {
+    width: 135,
+    height: 135,
+    resizeMode: 'contain',
+  },
+  sinImagen: {
+    color: '#777777',
   },
   botonesCambio: {
     flexDirection: 'row',
@@ -204,6 +293,13 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
+  botonDragonBall: {
+    backgroundColor: '#e48a20',
+    marginTop: 12,
+    padding: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
   textoDatos: {
     color: 'white',
     fontWeight: 'bold',
@@ -211,5 +307,42 @@ const styles = StyleSheet.create({
   },
   botonDeshabilitado: {
     opacity: 0.4,
+  },
+  cargandoExtra: {
+    marginTop: 18,
+  },
+  tarjetaDragonBall: {
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#bbbbbb',
+    borderRadius: 10,
+    padding: 16,
+    marginTop: 18,
+    alignItems: 'center',
+  },
+  tituloDragonBall: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  imagenDragonBall: {
+    width: 180,
+    height: 220,
+    resizeMode: 'contain',
+  },
+  nombreDragonBall: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginTop: 8,
+  },
+  datoDragonBall: {
+    fontSize: 16,
+    marginTop: 5,
+  },
+  descripcion: {
+    marginTop: 12,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'justify',
   },
 });

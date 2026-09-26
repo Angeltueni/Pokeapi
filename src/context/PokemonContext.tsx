@@ -5,7 +5,9 @@ import { obtenerPokemon } from '@/services/pokemonApi';
 export type Pokemon = {
   id: number;
   nombre: string;
-  imagen: string;
+  imagen: string | null;
+  imagen2: string | null;
+  imagen3: string | null;
   altura: number;
   peso: number;
   tipos: string[];

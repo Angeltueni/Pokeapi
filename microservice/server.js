@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ mensaje: 'Microservicio Pokémon funcionando' });
+  res.json({ mensaje: 'Microservicio funcionando' });
 });
 
 app.post('/pokemon', async (req, res) => {
@@ -33,6 +33,8 @@ app.post('/pokemon', async (req, res) => {
       id: datos.id,
       nombre: datos.name,
       imagen: datos.sprites.front_default,
+      imagen2: datos.sprites.back_default,
+      imagen3: datos.sprites.front_shiny,
       altura: datos.height,
       peso: datos.weight,
       tipos: datos.types.map((item) => item.type.name),
@@ -43,6 +45,46 @@ app.post('/pokemon', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ mensaje: 'Error al consultar PokeAPI' });
+  }
+});
+
+app.get('/dragonball', async (req, res) => {
+  try {
+    const id = Math.floor(Math.random() * 58) + 1;
+    const respuesta = await fetch(`https://dragonball-api.com/api/characters/${id}`);
+
+    if (!respuesta.ok) {
+      return res.status(404).json({ mensaje: 'Personaje no encontrado' });
+    }
+
+    const datos = await respuesta.json();
+
+    const razasEnEspanol = {
+      Saiyan: 'Saiyajin',
+      Human: 'Humano',
+      Namekian: 'Namekiano',
+      Android: 'Androide',
+      Majin: 'Majin',
+      God: 'Dios',
+      Angel: 'Ángel',
+      Evil: 'Maligno',
+      Unknown: 'Desconocida',
+      'Frieza Race': 'Raza de Freezer',
+    };
+
+    const personaje = {
+      id: datos.id,
+      nombre: datos.name,
+      imagen: datos.image,
+      raza: razasEnEspanol[datos.race] || datos.race,
+      ki: datos.ki,
+      descripcion: datos.description,
+    };
+
+    res.json(personaje);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ mensaje: 'Error al consultar Dragon Ball API' });
   }
 });
 
