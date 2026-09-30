@@ -22,28 +22,25 @@ export default function DatosPokemonScreen() {
       <View style={styles.fila}>
         <View style={styles.cajaPequena}>
           <Text style={styles.etiqueta}>Altura</Text>
-          <Text style={styles.valor}>{pokemon.altura}</Text>
+          <Text style={styles.valor}>{pokemon.altura ?? 'Sin dato'}</Text>
         </View>
         <View style={styles.cajaPequena}>
           <Text style={styles.etiqueta}>Peso</Text>
-          <Text style={styles.valor}>{pokemon.peso}</Text>
+          <Text style={styles.valor}>{pokemon.peso ?? 'Sin dato'}</Text>
         </View>
-      </View>
-
-      <View style={styles.caja}>
-        <Text style={styles.etiqueta}>Tipos</Text>
-        {pokemon.tipos.map((tipo) => (
-          <Text key={tipo} style={styles.item}>• {tipo}</Text>
-        ))}
       </View>
 
       <View style={styles.caja}>
         <Text style={styles.etiqueta}>Movimientos</Text>
-        {pokemon.movimientos.map((movimiento, index) => (
-          <Text key={`${movimiento}-${index}`} style={styles.item}>
-            {index + 1}. {movimiento}
-          </Text>
-        ))}
+        {pokemon.movimiento1 ? (
+          <Text style={styles.item}>1. {pokemon.movimiento1}</Text>
+        ) : null}
+        {pokemon.movimiento2 ? (
+          <Text style={styles.item}>2. {pokemon.movimiento2}</Text>
+        ) : null}
+        {!pokemon.movimiento1 && !pokemon.movimiento2 ? (
+          <Text style={styles.item}>Sin movimientos registrados</Text>
+        ) : null}
       </View>
     </ScrollView>
   );

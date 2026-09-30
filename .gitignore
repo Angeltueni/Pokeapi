@@ -38,3 +38,7 @@ yarn-error.*
 # generated native folders
 ios/
 android/
+
+# Firebase private key
+firebase-key.json
+**/firebase-key.json

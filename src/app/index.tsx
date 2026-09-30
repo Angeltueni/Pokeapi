@@ -81,7 +81,7 @@ export default function PokemonScreen() {
         <Pressable
           style={[styles.botonSecundario, !pokemon && styles.deshabilitado]}
           onPress={anterior}
-          disabled={!pokemon || pokemon.id <= 1 || cargando}
+          disabled={!pokemon || cargando}
         >
           <Text>Anterior</Text>
         </Pressable>

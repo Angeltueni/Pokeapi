@@ -1,6 +1,6 @@
 import { createContext, ReactNode, useContext, useState } from 'react';
 
-import { obtenerPokemon } from '@/services/pokemonApi';
+import { obtenerPokemon, obtenerPokemones } from '@/services/pokemonApi';
 
 export type Pokemon = {
   id: number;
@@ -8,10 +8,11 @@ export type Pokemon = {
   imagen: string | null;
   imagen2: string | null;
   imagen3: string | null;
-  altura: number;
-  peso: number;
-  tipos: string[];
-  movimientos: string[];
+  altura: number | null;
+  peso: number | null;
+  movimiento1: string | null;
+  movimiento2: string | null;
+  created_at?: string;
 };
 
 type PokemonContextType = {
@@ -53,16 +54,41 @@ export function PokemonProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const anterior = async () => {
-    if (pokemon && pokemon.id > 1) {
-      await buscarPokemon(pokemon.id - 1);
+  const cambiarPokemon = async (direccion: 'anterior' | 'siguiente') => {
+    if (!pokemon) return;
+
+    try {
+      setCargando(true);
+      setError('');
+
+      const lista = await obtenerPokemones();
+      if (!lista || lista.length === 0) return;
+
+      const indiceActual = lista.findIndex((p) => p.id === pokemon.id);
+
+      let nuevoIndice = 0;
+      if (indiceActual === -1) {
+        nuevoIndice = 0;
+      } else if (direccion === 'siguiente') {
+        nuevoIndice = indiceActual + 1 >= lista.length ? 0 : indiceActual + 1;
+      } else {
+        nuevoIndice = indiceActual - 1 < 0 ? lista.length - 1 : indiceActual - 1;
+      }
+
+      setPokemon(lista[nuevoIndice]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ocurrió un error al cambiar de Pokémon');
+    } finally {
+      setCargando(false);
     }
   };
 
+  const anterior = async () => {
+    await cambiarPokemon('anterior');
+  };
+
   const siguiente = async () => {
-    if (pokemon) {
-      await buscarPokemon(pokemon.id + 1);
-    }
+    await cambiarPokemon('siguiente');
   };
 
   return (
