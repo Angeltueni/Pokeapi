@@ -17,6 +17,17 @@ const supabase = createClient(supabaseUrl, supabaseSecretKey);
 app.use(cors());
 app.use(express.json());
 
+app.use((req, res, next) => {
+  console.log(`PETICION RECIBIDA: ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+app.get('/prueba-render', (req, res) => {
+  res.json({
+    mensaje: 'Render está llegando a Express'
+  });
+});
+
 // Configuración de Swagger (OpenAPI 3.0.0)
 const swaggerOptions = {
   definition: {
@@ -286,6 +297,13 @@ app.get("/pokemones/nombre/:nombre", async (req, res) => {
     console.error(error);
     res.status(500).json({ error: "Error interno del servidor" });
   }
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Ruta no encontrada en Express',
+    ruta: req.originalUrl
+  });
 });
 
 // Iniciar servidor
