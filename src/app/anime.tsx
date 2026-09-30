@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   Image,
   Pressable,
   ScrollView,
@@ -10,20 +9,20 @@ import {
   View,
 } from 'react-native';
 
-import { usePokemon } from '@/context/PokemonContext';
+import { useAnime } from '@/context/AnimeContext';
 
-export default function PokemonScreen() {
+export default function AnimeScreen() {
   const [texto, setTexto] = useState('');
-  const { pokemon, cargando, error, buscarPokemon, anterior, siguiente } = usePokemon();
+  const { personaje, cargando, error, buscarPersonaje, anterior, siguiente } = useAnime();
 
   const buscar = async () => {
-    const encontrado = await buscarPokemon(texto);
+    const encontrado = await buscarPersonaje(texto);
     if (encontrado) setTexto('');
   };
 
   return (
     <ScrollView contentContainerStyle={styles.pantalla}>
-      <Text style={styles.titulo}>Pokémon</Text>
+      <Text style={styles.titulo}>Anime</Text>
 
       <View style={styles.buscador}>
         <TextInput
@@ -43,31 +42,31 @@ export default function PokemonScreen() {
 
       <View style={styles.tarjetaPrincipal}>
         {cargando ? (
-          <ActivityIndicator size="large" />
-        ) : pokemon ? (
+          <Text style={styles.mensaje}>Cargando...</Text>
+        ) : personaje ? (
           <>
-            {pokemon.imagen ? (
+            {personaje.imagen ? (
               <Image
-                source={{ uri: pokemon.imagen }}
+                source={{ uri: personaje.imagen }}
                 style={styles.imagenPrincipal}
                 resizeMode="contain"
               />
             ) : (
               <Text>Sin imagen</Text>
             )}
-            <Text style={styles.nombre}>{pokemon.nombre}</Text>
+            <Text style={styles.nombre}>{personaje.nombre}</Text>
           </>
         ) : (
-          <Text style={styles.mensaje}>Busca un Pokémon</Text>
+          <Text style={styles.mensaje}>Busca un personaje para comenzar</Text>
         )}
       </View>
 
-      {pokemon ? (
+      {personaje ? (
         <View style={styles.filaImagenes}>
           <View style={styles.tarjetaPequena}>
-            {pokemon.imagen2 ? (
+            {personaje.imagen2 ? (
               <Image
-                source={{ uri: pokemon.imagen2 }}
+                source={{ uri: personaje.imagen2 }}
                 style={styles.imagenPequena}
                 resizeMode="contain"
               />
@@ -76,9 +75,9 @@ export default function PokemonScreen() {
             )}
           </View>
           <View style={styles.tarjetaPequena}>
-            {pokemon.imagen3 ? (
+            {personaje.imagen3 ? (
               <Image
-                source={{ uri: pokemon.imagen3 }}
+                source={{ uri: personaje.imagen3 }}
                 style={styles.imagenPequena}
                 resizeMode="contain"
               />
@@ -91,22 +90,22 @@ export default function PokemonScreen() {
 
       <View style={styles.botonesCambio}>
         <Pressable
-          style={[styles.botonSecundario, !pokemon && styles.deshabilitado]}
+          style={[styles.botonSecundario, !personaje && styles.deshabilitado]}
           onPress={anterior}
-          disabled={!pokemon || cargando}
+          disabled={!personaje || cargando}
         >
           <Text>Anterior</Text>
         </Pressable>
         <Pressable
-          style={[styles.botonSecundario, !pokemon && styles.deshabilitado]}
+          style={[styles.botonSecundario, !personaje && styles.deshabilitado]}
           onPress={siguiente}
-          disabled={!pokemon || cargando}
+          disabled={!personaje || cargando}
         >
           <Text>Siguiente</Text>
         </Pressable>
       </View>
 
-      <Text style={styles.ayuda}>Los datos completos están en la pestaña Datos Pokémon.</Text>
+      <Text style={styles.ayuda}>Los datos completos están en la pestaña Datos Anime.</Text>
     </ScrollView>
   );
 }
@@ -124,7 +123,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
     marginBottom: 20,
-    color: '#d93636',
+    color: '#1e88e5',
   },
   buscador: {
     flexDirection: 'row',
@@ -170,10 +169,12 @@ const styles = StyleSheet.create({
   nombre: {
     fontSize: 24,
     fontWeight: 'bold',
-    textTransform: 'capitalize',
+    textAlign: 'center',
+    marginTop: 10,
   },
   mensaje: {
     color: '#666',
+    fontSize: 16,
   },
   filaImagenes: {
     flexDirection: 'row',
@@ -185,7 +186,7 @@ const styles = StyleSheet.create({
     height: 150,
     backgroundColor: 'white',
     borderWidth: 2,
-    borderColor: '#46aee8',
+    borderColor: '#1e88e5',
     borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
