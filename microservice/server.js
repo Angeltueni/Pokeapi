@@ -27,12 +27,6 @@ const swaggerOptions = {
       description:
         "Microservicio Node.js que consulta Pokémon almacenados en Supabase.",
     },
-    servers: [
-      {
-        url: `http://localhost:${PORT}`,
-        description: "Servidor local de desarrollo",
-      },
-    ],
     components: {
       schemas: {
         Pokemon: {
