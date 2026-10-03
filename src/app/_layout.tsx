@@ -51,6 +51,15 @@ export default function RootLayout() {
             }}
           />
           <Tabs.Screen
+            name="docentes"
+            options={{
+              title: 'Docentes',
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons name="school" size={size} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
             name="detalles"
             options={{
               href: null,
