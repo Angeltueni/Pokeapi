@@ -1,0 +1,10 @@
+{
+  "name": "microservice-docentes-actualizar",
+  "version": "1.0.0",
+  "description": "Microservicio agnóstico Node.js para actualizar docentes en Supabase mediante Path Params y Query Params",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env --watch server.js"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "microservice-docentes-crear",
+  "version": "1.0.0",
+  "description": "Microservicio agnóstico Node.js para crear docentes en Supabase mediante Query Params",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env --watch server.js"
+  }
+}

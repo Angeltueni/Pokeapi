@@ -6,46 +6,68 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-import { Docente, obtenerDocente } from '@/services/docentesApi';
+import { Docente, obtenerDocente, obtenerDocentes } from '@/services/docentesApi';
 
 export default function DocentesScreen() {
+  const [docentes, setDocentes] = useState<Docente[]>([]);
   const [docente, setDocente] = useState<Docente | null>(null);
+  const [busqueda, setBusqueda] = useState('');
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [verPerfil, setVerPerfil] = useState(false);
 
   useEffect(() => {
-    async function cargarDocente() {
+    async function cargarDocentes() {
       try {
         setCargando(true);
         setError('');
-        // Consulta usando el endpoint con Path Param: GET /docentes/1
-        const datos = await obtenerDocente(1);
-        setDocente(datos);
+        // Obtiene la lista completa de docentes: GET /docentes
+        const datos = await obtenerDocentes();
+        setDocentes(datos);
+        if (datos.length > 0) {
+          setDocente(datos[0]);
+        }
       } catch (err) {
         setError(
           err instanceof Error
             ? err.message
-            : 'No se pudo cargar la información del docente.'
+            : 'No se pudo cargar la información de los docentes.'
         );
       } finally {
         setCargando(false);
       }
     }
 
-    cargarDocente();
+    cargarDocentes();
   }, []);
+
+  async function seleccionarDocente(id: number) {
+    try {
+      // Consulta individual con Path Param: GET /docentes/{id}
+      const datos = await obtenerDocente(id);
+      setDocente(datos);
+      setBusqueda('');
+      setVerPerfil(false);
+    } catch {
+      setError('No se pudo cargar el docente seleccionado.');
+    }
+  }
+
+  const docentesFiltrados = docentes.filter((item) =>
+    item.nombre.toLowerCase().includes(busqueda.toLowerCase())
+  );
 
   if (cargando) {
     return (
       <View style={styles.centro}>
         <ActivityIndicator size="large" color="#1e88e5" />
         <Text style={styles.mensajeCarga}>
-          Cargando información del docente...
+          Cargando información de docentes...
         </Text>
       </View>
     );
@@ -56,7 +78,7 @@ export default function DocentesScreen() {
       <View style={styles.centro}>
         <Ionicons name="alert-circle-outline" size={60} color="#b00020" />
         <Text style={styles.error}>
-          {error || 'No se pudo cargar la información del docente.'}
+          {error || 'No se pudo cargar la información de los docentes.'}
         </Text>
       </View>
     );
@@ -131,11 +153,56 @@ export default function DocentesScreen() {
   }
 
   // ==========================================
-  // VISTA 1: RESUMEN (verPerfil === false)
+  // VISTA 1: RESUMEN Y BÚSQUEDA (verPerfil === false)
   // ==========================================
   return (
     <ScrollView contentContainerStyle={styles.pantalla}>
       <Text style={styles.titulo}>Datos de Docentes UNINPAHU</Text>
+
+      {/* Buscador de docentes */}
+      <View style={styles.contenedorBuscador}>
+        <Ionicons name="search" size={20} color="#666" style={styles.iconoBuscador} />
+        <TextInput
+          style={styles.inputBusqueda}
+          placeholder="Buscar docente..."
+          placeholderTextColor="#888"
+          value={busqueda}
+          onChangeText={setBusqueda}
+          autoCapitalize="none"
+        />
+        {busqueda.length > 0 && (
+          <Pressable onPress={() => setBusqueda('')}>
+            <Ionicons name="close-circle" size={20} color="#888" />
+          </Pressable>
+        )}
+      </View>
+
+      {/* Resultados de la búsqueda */}
+      {busqueda.trim().length > 0 && (
+        <View style={styles.contenedorResultados}>
+          {docentesFiltrados.length === 0 ? (
+            <Text style={styles.sinResultados}>No se encontraron docentes</Text>
+          ) : (
+            docentesFiltrados.map((item) => (
+              <Pressable
+                key={item.id}
+                style={styles.resultadoDocente}
+                onPress={() => seleccionarDocente(item.id)}
+              >
+                <Text style={styles.nombreResultado}>{item.nombre}</Text>
+                {item.cargo ? (
+                  <Text style={styles.cargoResultado}>{item.cargo}</Text>
+                ) : null}
+                {item.programa ? (
+                  <Text style={styles.programaResultado}>{item.programa}</Text>
+                ) : null}
+              </Pressable>
+            ))
+          )}
+        </View>
+      )}
+
+      {/* Docente seleccionado actualmente */}
       <Text style={styles.nombreResumen}>{docente.nombre}</Text>
 
       <View style={styles.tarjetaPrincipal}>
@@ -223,7 +290,59 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
     color: '#1565c0',
+    marginBottom: 16,
+  },
+  contenedorBuscador: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginBottom: 16,
+  },
+  iconoBuscador: {
+    marginRight: 8,
+  },
+  inputBusqueda: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#333',
+  },
+  contenedorResultados: {
+    marginBottom: 16,
+  },
+  resultadoDocente: {
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 10,
+    padding: 12,
     marginBottom: 8,
+  },
+  nombreResultado: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#1565c0',
+  },
+  cargoResultado: {
+    fontSize: 14,
+    color: '#444',
+    marginTop: 2,
+  },
+  programaResultado: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 2,
+  },
+  sinResultados: {
+    textAlign: 'center',
+    fontSize: 15,
+    color: '#777',
+    fontStyle: 'italic',
+    paddingVertical: 10,
   },
   nombreResumen: {
     fontSize: 22,
@@ -262,10 +381,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#666',
     textAlign: 'center',
-  },
-  cabeceraPerfil: {
-    alignItems: 'center',
-    marginBottom: 20,
   },
   imagenPerfil: {
     width: 130,
