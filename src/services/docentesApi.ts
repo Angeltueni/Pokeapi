@@ -3,6 +3,17 @@ const API_CREAR_URL = process.env.EXPO_PUBLIC_DOCENTES_CREAR_API_URL;
 const API_ACTUALIZAR_URL = process.env.EXPO_PUBLIC_DOCENTES_ACTUALIZAR_API_URL;
 const API_ELIMINAR_URL = process.env.EXPO_PUBLIC_DOCENTES_ELIMINAR_API_URL;
 
+// Clase de error personalizada para diferenciar errores HTTP funcionales de fallos de red
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 export type Docente = {
   id: number;
   nombre: string;
@@ -31,7 +42,11 @@ export async function obtenerDocentes(): Promise<Docente[]> {
   const respuesta = await fetch(`${API_URL}/docentes`);
 
   if (!respuesta.ok) {
-    throw new Error('No se pudo obtener la información de los docentes');
+    const errorData = await respuesta.json().catch(() => null);
+    throw new ApiError(
+      errorData?.error || 'No se pudo obtener la información de los docentes',
+      respuesta.status
+    );
   }
 
   const datos = await respuesta.json();
@@ -42,7 +57,11 @@ export async function obtenerDocente(id: number): Promise<Docente> {
   const respuesta = await fetch(`${API_URL}/docentes/${id}`);
 
   if (!respuesta.ok) {
-    throw new Error('No se pudo obtener la información del docente');
+    const errorData = await respuesta.json().catch(() => null);
+    throw new ApiError(
+      errorData?.error || 'No se pudo obtener la información del docente',
+      respuesta.status
+    );
   }
 
   const datos = await respuesta.json();
@@ -81,7 +100,10 @@ export async function crearDocente(datos: DocenteInput): Promise<Docente> {
 
   if (!respuesta.ok) {
     const errorData = await respuesta.json().catch(() => null);
-    throw new Error(errorData?.error || 'No se pudo crear el docente');
+    throw new ApiError(
+      errorData?.error || 'No se pudo crear el docente',
+      respuesta.status
+    );
   }
 
   const resultado = await respuesta.json();
@@ -128,7 +150,10 @@ export async function actualizarDocente(
 
   if (!respuesta.ok) {
     const errorData = await respuesta.json().catch(() => null);
-    throw new Error(errorData?.error || 'No se pudo actualizar el docente');
+    throw new ApiError(
+      errorData?.error || 'No se pudo actualizar el docente',
+      respuesta.status
+    );
   }
 
   const resultado = await respuesta.json();
@@ -144,7 +169,10 @@ export async function eliminarDocente(
 
   if (!respuesta.ok) {
     const errorData = await respuesta.json().catch(() => null);
-    throw new Error(errorData?.error || 'No se pudo eliminar el docente');
+    throw new ApiError(
+      errorData?.error || 'No se pudo eliminar el docente',
+      respuesta.status
+    );
   }
 
   const resultado = await respuesta.json();

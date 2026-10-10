@@ -13,21 +13,26 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 
 import {
-  Docente,
   DocenteInput,
+  DocenteModel,
   actualizarDocente,
+  consultarDocente,
   crearDocente,
   eliminarDocente,
-  obtenerDocente,
-  obtenerDocentes,
-} from '@/services/docentesApi';
+  inicializarRepositorio,
+  listarDocentes,
+} from '@/repositories/docentesRepository';
+import {
+  sincronizarDocentesPendientes,
+  suscribirCambiosDeRed,
+} from '@/services/docentesSync';
 
 type Modo = 'principal' | 'crear' | 'editar' | 'perfil';
 
 export default function DocentesScreen() {
   const [modo, setModo] = useState<Modo>('principal');
-  const [docentes, setDocentes] = useState<Docente[]>([]);
-  const [docente, setDocente] = useState<Docente | null>(null);
+  const [docentes, setDocentes] = useState<DocenteModel[]>([]);
+  const [docente, setDocente] = useState<DocenteModel | null>(null);
   const [busqueda, setBusqueda] = useState('');
   const [cargando, setCargando] = useState(true);
   const [procesando, setProcesando] = useState(false);
@@ -45,16 +50,16 @@ export default function DocentesScreen() {
     imagen: '',
   });
 
-  // Carga inicial de todos los docentes: GET /docentes
+  // Carga de docentes utilizando el Repositorio (identificación unívoca por local_id)
   async function cargarDocentes(idSeleccionar?: number) {
     try {
       setCargando(true);
       setError('');
-      const datos = await obtenerDocentes();
+      const datos = await listarDocentes();
       setDocentes(datos);
 
       if (datos.length > 0) {
-        if (idSeleccionar) {
+        if (idSeleccionar !== undefined) {
           const encontrado = datos.find((d) => d.id === idSeleccionar);
           setDocente(encontrado || datos[0]);
         } else {
@@ -79,14 +84,38 @@ export default function DocentesScreen() {
     }
   }
 
+  // Inicialización de SQLite y suscripción a reconexión de red en tiempo real
   useEffect(() => {
-    cargarDocentes();
+    async function iniciar() {
+      try {
+        await inicializarRepositorio();
+      } catch (err) {
+        console.warn('Error en la inicialización del repositorio:', err);
+      }
+      await cargarDocentes();
+    }
+
+    iniciar();
+
+    // Listener de reconexión: al pasar de offline a online sincroniza automáticamente
+    const desuscribirRed = suscribirCambiosDeRed(async () => {
+      try {
+        await sincronizarDocentesPendientes();
+        await cargarDocentes();
+      } catch (err) {
+        console.warn('Error al sincronizar tras reconexión:', err);
+      }
+    });
+
+    return () => {
+      desuscribirRed();
+    };
   }, []);
 
-  // Seleccionar docente por ID usando Path Param: GET /docentes/{id}
-  async function seleccionarDocente(id: number) {
+  // Seleccionar docente por local_id
+  async function seleccionarDocente(localId: number) {
     try {
-      const datos = await obtenerDocente(id);
+      const datos = await consultarDocente(localId);
       setDocente(datos);
       setBusqueda('');
       setModo('principal');
@@ -110,7 +139,7 @@ export default function DocentesScreen() {
     setModo('crear');
   }
 
-  // Abrir formulario de edición con los datos del docente seleccionado
+  // Abrir formulario de edición con los datos actuales
   function abrirEditar() {
     if (!docente) return;
     setFormulario({
@@ -137,24 +166,23 @@ export default function DocentesScreen() {
       setProcesando(true);
 
       if (modo === 'crear') {
-        // POST /docentes mediante Query Params
         const nuevo = await crearDocente(formulario);
         Alert.alert('Éxito', 'Docente creado correctamente.');
         await cargarDocentes(nuevo.id);
         setModo('principal');
       } else if (modo === 'editar' && docente) {
-        // PATCH /docentes/{id} mediante Path Param + Query Params
-        await actualizarDocente(docente.id, formulario);
+        const actualizado = await actualizarDocente(docente.id, formulario);
         Alert.alert('Éxito', 'Docente actualizado correctamente.');
-        const docenteActualizado = await obtenerDocente(docente.id);
-        setDocente(docenteActualizado);
+        setDocente(actualizado);
         await cargarDocentes(docente.id);
         setModo('principal');
       }
     } catch (err) {
       Alert.alert(
         'Error',
-        err instanceof Error ? err.message : 'No se pudo guardar la información.'
+        err instanceof Error
+          ? err.message
+          : 'No se pudo guardar la información del docente.'
       );
     } finally {
       setProcesando(false);
@@ -179,7 +207,7 @@ export default function DocentesScreen() {
     );
   }
 
-  // DELETE /docentes/{id} mediante Path Param
+  // Ejecución de eliminación por local_id
   async function ejecutarEliminar() {
     if (!docente) return;
 
@@ -187,7 +215,7 @@ export default function DocentesScreen() {
       setProcesando(true);
       await eliminarDocente(docente.id);
       Alert.alert('Éxito', 'Docente eliminado correctamente.');
-      const listaActualizada = await obtenerDocentes();
+      const listaActualizada = await listarDocentes();
       setDocentes(listaActualizada);
       if (listaActualizada.length > 0) {
         setDocente(listaActualizada[0]);
@@ -198,7 +226,9 @@ export default function DocentesScreen() {
     } catch (err) {
       Alert.alert(
         'Error',
-        err instanceof Error ? err.message : 'No se pudo eliminar el docente.'
+        err instanceof Error
+          ? err.message
+          : 'No se pudo eliminar el docente.'
       );
     } finally {
       setProcesando(false);
@@ -226,7 +256,10 @@ export default function DocentesScreen() {
       <View style={styles.centro}>
         <Ionicons name="alert-circle-outline" size={60} color="#b00020" />
         <Text style={styles.error}>{error}</Text>
-        <Pressable style={styles.botonReintentar} onPress={() => cargarDocentes()}>
+        <Pressable
+          style={styles.botonReintentar}
+          onPress={() => cargarDocentes()}
+        >
           <Ionicons name="refresh" size={20} color="white" />
           <Text style={styles.textoBoton}>Reintentar</Text>
         </Pressable>
@@ -267,17 +300,23 @@ export default function DocentesScreen() {
 
           <View style={styles.tarjeta}>
             <Text style={styles.etiqueta}>Programa</Text>
-            <Text style={styles.valor}>{docente.programa || 'No disponible'}</Text>
+            <Text style={styles.valor}>
+              {docente.programa || 'No disponible'}
+            </Text>
           </View>
 
           <View style={styles.tarjeta}>
             <Text style={styles.etiqueta}>Pregrado</Text>
-            <Text style={styles.valor}>{docente.pregrado || 'No disponible'}</Text>
+            <Text style={styles.valor}>
+              {docente.pregrado || 'No disponible'}
+            </Text>
           </View>
 
           <View style={styles.tarjeta}>
             <Text style={styles.etiqueta}>Posgrado</Text>
-            <Text style={styles.valor}>{docente.posgrado || 'No disponible'}</Text>
+            <Text style={styles.valor}>
+              {docente.posgrado || 'No disponible'}
+            </Text>
           </View>
 
           <View style={styles.tarjeta}>
@@ -456,7 +495,12 @@ export default function DocentesScreen() {
 
       {/* Buscador de docentes */}
       <View style={styles.contenedorBuscador}>
-        <Ionicons name="search" size={20} color="#666" style={styles.iconoBuscador} />
+        <Ionicons
+          name="search"
+          size={20}
+          color="#666"
+          style={styles.iconoBuscador}
+        />
         <TextInput
           style={styles.inputBusqueda}
           placeholder="Buscar docente..."
@@ -530,7 +574,9 @@ export default function DocentesScreen() {
 
           <View style={styles.tarjeta}>
             <Text style={styles.etiqueta}>Resumen</Text>
-            <Text style={styles.valor}>{docente.resumen || 'No disponible'}</Text>
+            <Text style={styles.valor}>
+              {docente.resumen || 'No disponible'}
+            </Text>
           </View>
 
           {/* Botones de Acción CRUD */}
@@ -543,16 +589,16 @@ export default function DocentesScreen() {
               <Text style={styles.textoBoton}>Ver más</Text>
             </Pressable>
 
-            <Pressable
-              style={styles.botonEditar}
-              onPress={abrirEditar}
-            >
+            <Pressable style={styles.botonEditar} onPress={abrirEditar}>
               <Ionicons name="create-outline" size={20} color="white" />
               <Text style={styles.textoBoton}>Editar</Text>
             </Pressable>
 
             <Pressable
-              style={[styles.botonEliminar, procesando && styles.botonDesactivado]}
+              style={[
+                styles.botonEliminar,
+                procesando && styles.botonDesactivado,
+              ]}
               disabled={procesando}
               onPress={confirmarEliminar}
             >
