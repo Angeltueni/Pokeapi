@@ -3,9 +3,9 @@ import {
   actualizarCloudIdDocenteLocal,
   eliminarDocenteLocalFisicamente,
   eliminarOperacionPendiente,
-  guardarDocentesNubeEnLocal,
   obtenerDocenteLocalPorLocalId,
   obtenerOperacionesPendientes,
+  reconciliarNubeConLocal,
 } from '@/database/docentesLocal';
 import {
   DocenteInput,
@@ -25,67 +25,43 @@ export async function hayConexionInternet(): Promise<boolean> {
   }
 }
 
-// Suscripción a cambios de conectividad en tiempo real
-export function suscribirCambiosDeRed(
-  onReconexion: () => void | Promise<void>
-): () => void {
-  let estabaOffline = false;
-
-  // Registrar estado inicial
-  hayConexionInternet().then((online) => {
-    estabaOffline = !online;
-  });
-
-  try {
-    const sub = Network.addNetworkStateListener(async (event) => {
-      const online = Boolean(
-        event.isConnected && event.isInternetReachable !== false
-      );
-      if (estabaOffline && online) {
-        await onReconexion();
-      }
-      estabaOffline = !online;
-    });
-
-    return () => {
-      sub.remove();
-    };
-  } catch {
-    // Fallback con temporizador si el listener nativo no estuviera disponible en el entorno
-    const interval = setInterval(async () => {
-      const online = await hayConexionInternet();
-      if (estabaOffline && online) {
-        await onReconexion();
-      }
-      estabaOffline = !online;
-    }, 4000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }
-}
-
 // Mutex simple para evitar sincronizaciones concurrentes
 let sincronizando = false;
 
-// Sincronización secuencial de operaciones pendientes
-export async function sincronizarDocentesPendientes(): Promise<boolean> {
+// ==================================================
+// ORQUESTADOR COMPLETO: PULL -> DEDUPLICAR -> PUSH -> PULL
+// ==================================================
+export async function sincronizarDocentesCompleto(): Promise<{
+  exito: boolean;
+  nuevosDetectados: number;
+}> {
   if (sincronizando) {
-    return false;
+    return { exito: false, nuevosDetectados: 0 };
   }
 
   const online = await hayConexionInternet();
   if (!online) {
-    return false;
+    return { exito: false, nuevosDetectados: 0 };
   }
 
   sincronizando = true;
+  let totalNuevos = 0;
 
   try {
+    // PASO 1 & 2: Obtener docentes actuales de la nube
+    let docentesNube = await obtenerDocentes();
+
+    // PASO 3, 4 & 5: Reconciliación Nube -> Local:
+    // - Deduplica registros creados offline frente a la nube ANTES de enviar CREATE
+    // - Inserta nuevas inserciones externas de nube con es_nuevo = 1
+    // - Actualiza registros existentes sin operaciones locales pendientes (Cloud Wins)
+    // - Reconcilia eliminaciones de nube si no hay cambios locales pendientes
+    const resReconciliacion = await reconciliarNubeConLocal(docentesNube);
+    totalNuevos += resReconciliacion.nuevosDetectados;
+
+    // PASO 6: Procesar secuencialmente las operaciones locales que todavía sigan pendientes
     const pendientes = await obtenerOperacionesPendientes();
 
-    // Procesamiento estrictamente SECUENCIAL
     for (const op of pendientes) {
       try {
         if (op.operacion === 'CREATE') {
@@ -128,7 +104,6 @@ export async function sincronizarDocentesPendientes(): Promise<boolean> {
             try {
               await eliminarDocente(op.cloud_id);
             } catch (err) {
-              // Si el recurso ya fue eliminado en la nube (404), continuar limpiando la copia local
               const mensaje = err instanceof Error ? err.message : '';
               if (!mensaje.includes('404') && !mensaje.includes('no encontrado')) {
                 throw err;
@@ -142,22 +117,105 @@ export async function sincronizarDocentesPendientes(): Promise<boolean> {
           await eliminarOperacionPendiente(op.id);
         }
       } catch (error) {
-        console.warn('Interrupción de sincronización por error de conectividad:', error);
-        // Detener la sincronización secuencial si falla la red y conservar pendientes restantes
+        console.warn('Interrupción al enviar pendientes por desconexión:', error);
         break;
       }
     }
 
-    // Actualizar la copia local SQLite con la información más reciente de Supabase
+    // PASO 7 & 8: Pull final de reconciliación para asegurar consistencia absoluta
     try {
-      const docentesNube = await obtenerDocentes();
-      await guardarDocentesNubeEnLocal(docentesNube);
+      docentesNube = await obtenerDocentes();
+      const resFinal = await reconciliarNubeConLocal(docentesNube);
+      totalNuevos += resFinal.nuevosDetectados;
     } catch {
-      // Si la consulta falla, las operaciones sincronizadas ya están persistidas
+      // Ignorar si la última comprobación falla temporalmente
     }
 
-    return true;
+    return { exito: true, nuevosDetectados: totalNuevos };
+  } catch (error) {
+    console.warn('Error durante sincronizarDocentesCompleto:', error);
+    return { exito: false, nuevosDetectados: 0 };
   } finally {
     sincronizando = false;
+  }
+}
+
+// Mantener compatibilidad con llamadas anteriores
+export async function sincronizarDocentesPendientes(): Promise<boolean> {
+  const res = await sincronizarDocentesCompleto();
+  return res.exito;
+}
+
+// ==================================================
+// SERVICIO DE POLLING PARAMETRIZABLE (2s, 10s, 30s)
+// ==================================================
+export function iniciarMonitoreoDocentes(
+  segundos: number,
+  onSincronizado: () => void | Promise<void>
+): () => void {
+  const ms = Math.max(2000, segundos * 1000);
+
+  const timer = setInterval(async () => {
+    // Si la sincronización previa sigue en curso o estamos offline, saltar este tick
+    if (sincronizando) {
+      return;
+    }
+
+    const online = await hayConexionInternet();
+    if (!online) {
+      return;
+    }
+
+    const resultado = await sincronizarDocentesCompleto();
+    if (resultado.exito) {
+      await onSincronizado();
+    }
+  }, ms);
+
+  return () => {
+    clearInterval(timer);
+  };
+}
+
+// ==================================================
+// LISTENER DE RECONEXIÓN
+// ==================================================
+export function suscribirCambiosDeRed(
+  onReconexion: () => void | Promise<void>
+): () => void {
+  let estabaOffline = false;
+
+  hayConexionInternet().then((online) => {
+    estabaOffline = !online;
+  });
+
+  try {
+    const sub = Network.addNetworkStateListener(async (event) => {
+      const online = Boolean(
+        event.isConnected && event.isInternetReachable !== false
+      );
+      if (estabaOffline && online) {
+        await sincronizarDocentesCompleto();
+        await onReconexion();
+      }
+      estabaOffline = !online;
+    });
+
+    return () => {
+      sub.remove();
+    };
+  } catch {
+    const interval = setInterval(async () => {
+      const online = await hayConexionInternet();
+      if (estabaOffline && online) {
+        await sincronizarDocentesCompleto();
+        await onReconexion();
+      }
+      estabaOffline = !online;
+    }, 4000);
+
+    return () => {
+      clearInterval(interval);
+    };
   }
 }

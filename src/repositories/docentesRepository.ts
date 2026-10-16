@@ -7,10 +7,14 @@ import {
   eliminarDocenteLocalFisicamente,
   eliminarOperacionesPendientesDocente,
   eliminarUpdatesPendientesDocente,
-  guardarDocentesNubeEnLocal,
+  guardarIntervaloMonitoreo as guardarIntervaloMonitoreoLocal,
+  marcarDocenteComoVisto as marcarDocenteComoVistoLocal,
   marcarDocenteEliminado,
+  obtenerCantidadDocentesNuevos as obtenerCantidadDocentesNuevosLocal,
   obtenerDocenteLocalPorLocalId,
   obtenerDocentesLocales,
+  obtenerIntervaloMonitoreo as obtenerIntervaloMonitoreoLocal,
+  reconciliarNubeConLocal,
 } from '@/database/docentesLocal';
 import {
   ApiError,
@@ -23,7 +27,7 @@ import {
 } from '@/services/docentesApi';
 import {
   hayConexionInternet,
-  sincronizarDocentesPendientes,
+  sincronizarDocentesCompleto,
 } from '@/services/docentesSync';
 
 export type { DocenteInput } from '@/services/docentesApi';
@@ -42,6 +46,7 @@ export type DocenteModel = {
   imagen: string | null;
   created_at: string;
   pendiente?: boolean;
+  es_nuevo: boolean;
 };
 
 // Conversión de registro SQLite a modelo consumible por la interfaz de usuario
@@ -60,10 +65,11 @@ function aDocenteModel(local: DocenteLocal): DocenteModel {
     imagen: local.imagen,
     created_at: local.created_at,
     pendiente: local.cloud_id === null,
+    es_nuevo: local.es_nuevo === 1,
   };
 }
 
-// Reconocer estrictamente fallos reales de conectividad/fetch (sin capturar errores de código o HTTP)
+// Reconocer estrictamente fallos reales de conectividad/fetch
 function esErrorDeRed(err: unknown): boolean {
   if (err instanceof ApiError) {
     return false; // Error HTTP funcional del servidor (400, 404, 500)
@@ -95,8 +101,30 @@ export async function inicializarRepositorio(): Promise<void> {
   await inicializarBaseLocal();
   const online = await hayConexionInternet();
   if (online) {
-    await sincronizarDocentesPendientes();
+    await sincronizarDocentesCompleto();
   }
+}
+
+// Obtener intervalo de monitoreo persistido
+export async function obtenerIntervaloMonitoreo(): Promise<number> {
+  return obtenerIntervaloMonitoreoLocal();
+}
+
+// Guardar intervalo de monitoreo persistido
+export async function guardarIntervaloMonitoreo(
+  segundos: 2 | 10 | 30
+): Promise<void> {
+  await guardarIntervaloMonitoreoLocal(segundos);
+}
+
+// Obtener cantidad de docentes nuevos detectados desde la nube
+export async function obtenerCantidadDocentesNuevos(): Promise<number> {
+  return obtenerCantidadDocentesNuevosLocal();
+}
+
+// Marcar docente como visto (es_nuevo = 0) al consultarlo
+export async function marcarDocenteComoVisto(localId: number): Promise<void> {
+  await marcarDocenteComoVistoLocal(localId);
 }
 
 // LISTAR DOCENTES: Decisión transparente Nube / SQLite
@@ -106,7 +134,7 @@ export async function listarDocentes(): Promise<DocenteModel[]> {
   if (online) {
     try {
       const docentesNube = await obtenerDocentesApi();
-      await guardarDocentesNubeEnLocal(docentesNube);
+      await reconciliarNubeConLocal(docentesNube);
     } catch (err) {
       if (esErrorDeRed(err)) {
         console.warn('Fallo de conectividad al consultar microservicio; usando SQLite local');
@@ -131,7 +159,7 @@ export async function consultarDocente(localId: number): Promise<DocenteModel> {
   if (online && local.cloud_id !== null) {
     try {
       const docenteNube = await obtenerDocenteApi(local.cloud_id);
-      await guardarDocentesNubeEnLocal([docenteNube]);
+      await reconciliarNubeConLocal([docenteNube]);
       const actualizado = await obtenerDocenteLocalPorLocalId(localId);
       if (actualizado) {
         return aDocenteModel(actualizado);
@@ -155,8 +183,8 @@ export async function crearDocente(datos: DocenteInput): Promise<DocenteModel> {
     try {
       // 1. Crear en la nube vía microservicio POST /docentes
       const docenteNube = await crearDocenteApi(datos);
-      // 2. Guardar inmediatamente en SQLite con su cloud_id
-      const local = await crearDocenteLocal(datos, docenteNube.id);
+      // 2. Guardar inmediatamente en SQLite con su cloud_id y es_nuevo = 0 (lo creó el usuario)
+      const local = await crearDocenteLocal(datos, docenteNube.id, 0);
       return aDocenteModel(local);
     } catch (err) {
       if (!esErrorDeRed(err)) {
@@ -167,8 +195,8 @@ export async function crearDocente(datos: DocenteInput): Promise<DocenteModel> {
     }
   }
 
-  // Creación offline: Guardar en docentes_local y en sync_pendiente
-  const nuevoLocal = await crearDocenteLocal(datos, null);
+  // Creación offline: Guardar en docentes_local y en sync_pendiente (es_nuevo = 0)
+  const nuevoLocal = await crearDocenteLocal(datos, null, 0);
   await agregarOperacionPendiente('CREATE', nuevoLocal.local_id, null, datos);
   return aDocenteModel(nuevoLocal);
 }
@@ -192,12 +220,11 @@ export async function actualizarDocente(
       await actualizarDocenteApi(local.cloud_id, datos);
       // 2. Actualizar en SQLite local
       const actualizado = await actualizarDocenteLocal(local.local_id, datos);
-      // 3. Limpiar cualquier UPDATE pendiente anterior para evitar que sobrescriba el estado online más reciente
+      // 3. Limpiar cualquier UPDATE pendiente anterior
       await eliminarUpdatesPendientesDocente(local.local_id, local.cloud_id);
       return aDocenteModel(actualizado);
     } catch (err) {
       if (!esErrorDeRed(err)) {
-        // Error funcional del servidor (400, 404) o inesperado: propagar
         throw err;
       }
       console.warn('Fallo real de red al actualizar en microservicio; guardando en cola offline');

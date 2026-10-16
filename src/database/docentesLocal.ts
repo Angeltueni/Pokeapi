@@ -15,6 +15,8 @@ export type DocenteLocal = {
   created_at: string;
   eliminado: number;
   updated_at: string | null;
+  es_nuevo: number;
+  detectado_en: string | null;
 };
 
 export type OperacionPendiente = {
@@ -26,7 +28,84 @@ export type OperacionPendiente = {
   created_at: string;
 };
 
-// Obtener todos los docentes locales no eliminados
+// ==================================================
+// FUNCIÓN DE FIRMA / FINGERPRINT (Normalización de campos funcionales)
+// ==================================================
+function normalizar(valor?: string | null): string {
+  return (valor || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+export function crearFirmaDocente(datos: {
+  nombre?: string | null;
+  cargo?: string | null;
+  programa?: string | null;
+  resumen?: string | null;
+  pregrado?: string | null;
+  posgrado?: string | null;
+  experiencia?: string | null;
+  imagen?: string | null;
+}): string {
+  return [
+    normalizar(datos.nombre),
+    normalizar(datos.cargo),
+    normalizar(datos.programa),
+    normalizar(datos.resumen),
+    normalizar(datos.pregrado),
+    normalizar(datos.posgrado),
+    normalizar(datos.experiencia),
+    normalizar(datos.imagen),
+  ].join('|');
+}
+
+// ==================================================
+// CONFIGURACIÓN DE INTERVALO DE MONITOREO
+// ==================================================
+export async function obtenerIntervaloMonitoreo(): Promise<number> {
+  const db = await obtenerBaseDatos();
+  const row = await db.getFirstAsync<{ valor: string }>(
+    "SELECT valor FROM sync_config WHERE clave = 'docentes_polling_segundos'"
+  );
+  if (!row) return 10;
+  const num = parseInt(row.valor, 10);
+  return num === 2 || num === 10 || num === 30 ? num : 10;
+}
+
+export async function guardarIntervaloMonitoreo(
+  segundos: 2 | 10 | 30
+): Promise<void> {
+  const db = await obtenerBaseDatos();
+  await db.runAsync(
+    "INSERT OR REPLACE INTO sync_config (clave, valor) VALUES ('docentes_polling_segundos', ?)",
+    [segundos.toString()]
+  );
+}
+
+// ==================================================
+// CONTADOR Y GESTIÓN DE DOCENTES NUEVOS
+// ==================================================
+export async function obtenerCantidadDocentesNuevos(): Promise<number> {
+  const db = await obtenerBaseDatos();
+  const row = await db.getFirstAsync<{ total: number }>(
+    'SELECT COUNT(*) as total FROM docentes_local WHERE es_nuevo = 1 AND eliminado = 0'
+  );
+  return row?.total ?? 0;
+}
+
+export async function marcarDocenteComoVisto(localId: number): Promise<void> {
+  const db = await obtenerBaseDatos();
+  await db.runAsync(
+    'UPDATE docentes_local SET es_nuevo = 0 WHERE local_id = ?',
+    [localId]
+  );
+}
+
+// ==================================================
+// CONSULTAS LOCALES
+// ==================================================
 export async function obtenerDocentesLocales(): Promise<DocenteLocal[]> {
   const db = await obtenerBaseDatos();
   const rows = await db.getAllAsync<DocenteLocal>(
@@ -35,7 +114,6 @@ export async function obtenerDocentesLocales(): Promise<DocenteLocal[]> {
   return rows;
 }
 
-// Obtener docente local por cloud_id
 export async function obtenerDocenteLocalPorCloudId(
   cloudId: number
 ): Promise<DocenteLocal | null> {
@@ -47,7 +125,6 @@ export async function obtenerDocenteLocalPorCloudId(
   return row || null;
 }
 
-// Obtener docente local por local_id
 export async function obtenerDocenteLocalPorLocalId(
   localId: number
 ): Promise<DocenteLocal | null> {
@@ -59,18 +136,20 @@ export async function obtenerDocenteLocalPorLocalId(
   return row || null;
 }
 
-// Insertar docente en SQLite
+// Insertar docente en SQLite (Creado localmente, por defecto es_nuevo = 0)
 export async function crearDocenteLocal(
   datos: DocenteInput,
-  cloudId: number | null = null
+  cloudId: number | null = null,
+  esNuevo: number = 0,
+  detectadoEn: string | null = null
 ): Promise<DocenteLocal> {
   const db = await obtenerBaseDatos();
   const ahora = new Date().toISOString();
 
   const resultado = await db.runAsync(
     `INSERT INTO docentes_local 
-      (cloud_id, nombre, cargo, programa, resumen, pregrado, posgrado, experiencia, imagen, created_at, eliminado, updated_at) 
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      (cloud_id, nombre, cargo, programa, resumen, pregrado, posgrado, experiencia, imagen, created_at, eliminado, updated_at, es_nuevo, detectado_en) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
     [
       cloudId,
       datos.nombre,
@@ -83,6 +162,8 @@ export async function crearDocenteLocal(
       datos.imagen || null,
       ahora,
       ahora,
+      esNuevo,
+      detectadoEn,
     ]
   );
 
@@ -167,33 +248,84 @@ export async function eliminarDocenteLocalFisicamente(
   await db.runAsync('DELETE FROM docentes_local WHERE local_id = ?', [localId]);
 }
 
-// Guardar/Actualizar docentes de la nube en SQLite PROTEGIENDO cambios locales pendientes
-export async function guardarDocentesNubeEnLocal(
-  docentesNube: Docente[]
+// Actualizar el cloud_id asignado a un docente creado localmente
+export async function actualizarCloudIdDocenteLocal(
+  localId: number,
+  cloudId: number
 ): Promise<void> {
   const db = await obtenerBaseDatos();
-  const ahora = new Date().toISOString();
+  await db.runAsync(
+    'UPDATE docentes_local SET cloud_id = ? WHERE local_id = ?',
+    [cloudId, localId]
+  );
+}
 
-  for (const doc of docentesNube) {
-    // 1. Comprobar si existe localmente
-    const existe = await db.getFirstAsync<DocenteLocal>(
-      'SELECT * FROM docentes_local WHERE cloud_id = ?',
-      [doc.id]
+// ==================================================
+// RECONCILIACIÓN NUBE -> LOCAL CON DEDUPLICACIÓN
+// ==================================================
+export async function reconciliarNubeConLocal(
+  docentesNube: Docente[]
+): Promise<{ nuevosDetectados: number }> {
+  const db = await obtenerBaseDatos();
+  const ahora = new Date().toISOString();
+  let nuevosDetectados = 0;
+
+  // 1. Obtener estado actual de SQLite
+  const locales = await db.getAllAsync<DocenteLocal>(
+    'SELECT * FROM docentes_local WHERE eliminado = 0'
+  );
+  const pendientes = await obtenerOperacionesPendientes();
+
+  // 2. CASO CRÍTICO: DEDUPLICACIÓN ANTE INSERCIÓN SIMULTÁNEA NUBE + CREATE OFFLINE
+  // Identificar registros locales que tienen cloud_id = NULL y operación CREATE pendiente
+  const pendingCreates = pendientes.filter((p) => p.operacion === 'CREATE');
+  const cloudIdsFusionados = new Set<number>();
+
+  for (const opCreate of pendingCreates) {
+    if (!opCreate.local_id) continue;
+    const localSinCloud = locales.find((l) => l.local_id === opCreate.local_id);
+    if (!localSinCloud) continue;
+
+    const firmaLocal = crearFirmaDocente(localSinCloud);
+
+    // Buscar si algún docente devuelto por la nube tiene exactamente la misma firma funcional
+    const matchNube = docentesNube.find(
+      (docNube) =>
+        !cloudIdsFusionados.has(docNube.id) &&
+        crearFirmaDocente(docNube) === firmaLocal
     );
 
+    if (matchNube) {
+      // FUSIÓN (MERGE): El registro local mantiene su local_id y adopta el cloud_id de la nube.
+      // Se elimina la operación CREATE pendiente para evitar duplicar el POST.
+      await actualizarCloudIdDocenteLocal(localSinCloud.local_id, matchNube.id);
+      await eliminarOperacionPendiente(opCreate.id);
+      cloudIdsFusionados.add(matchNube.id);
+      localSinCloud.cloud_id = matchNube.id;
+    }
+  }
+
+  // 3. PROCESAR CADA DOCENTE PROVENIENTE DE LA NUBE
+  for (const doc of docentesNube) {
+    if (cloudIdsFusionados.has(doc.id)) {
+      // Ya fue fusionado con un CREATE offline; no volver a procesar como nuevo
+      continue;
+    }
+
+    const existe = locales.find((l) => l.cloud_id === doc.id);
+
     if (existe) {
-      // 2. Comprobar si este docente tiene operaciones pendientes de sincronización
-      const tienePendiente = await db.getFirstAsync<OperacionPendiente>(
-        'SELECT id FROM sync_pendiente WHERE (cloud_id = ? OR local_id = ?)',
-        [doc.id, existe.local_id]
+      // Comprobar si tiene operaciones locales pendientes (UPDATE o DELETE)
+      const tienePendiente = pendientes.some(
+        (p) => p.cloud_id === doc.id || p.local_id === existe.local_id
       );
 
-      // Si tiene modificaciones offline pendientes o está marcado como eliminado, NO sobrescribir con la nube
+      // Si tiene operaciones pendientes locales: LOCAL PENDING WINS (preservar estado local)
       if (tienePendiente || existe.eliminado === 1) {
         continue;
       }
 
-      // Si está limpio, actualizar con los datos más recientes de la nube
+      // Sin cambios pendientes locales: CLOUD WINS (actualizar con la versión de Supabase)
       await db.runAsync(
         `UPDATE docentes_local 
          SET nombre = ?, cargo = ?, programa = ?, resumen = ?, pregrado = ?, posgrado = ?, experiencia = ?, imagen = ?, created_at = ?, eliminado = 0, updated_at = ?
@@ -213,11 +345,11 @@ export async function guardarDocentesNubeEnLocal(
         ]
       );
     } else {
-      // Insertar nuevo registro proveniente de la nube
+      // Es una inserción NUEVA originada en la nube -> es_nuevo = 1
       await db.runAsync(
         `INSERT INTO docentes_local 
-          (cloud_id, nombre, cargo, programa, resumen, pregrado, posgrado, experiencia, imagen, created_at, eliminado, updated_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+          (cloud_id, nombre, cargo, programa, resumen, pregrado, posgrado, experiencia, imagen, created_at, eliminado, updated_at, es_nuevo, detectado_en) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)`,
         [
           doc.id,
           doc.nombre,
@@ -230,28 +362,40 @@ export async function guardarDocentesNubeEnLocal(
           doc.imagen,
           doc.created_at,
           ahora,
+          ahora,
         ]
       );
+      nuevosDetectados++;
     }
   }
+
+  // 4. RECONCILIAR ELIMINACIONES DIRECTAS DE NUBE (Requisito 25)
+  // Si un cloud_id existía localmente pero ya no aparece en Supabase y no tiene operaciones pendientes:
+  const cloudIdsEnNube = new Set(docentesNube.map((d) => d.id));
+  for (const local of locales) {
+    if (local.cloud_id !== null && !cloudIdsEnNube.has(local.cloud_id)) {
+      const tienePendiente = pendientes.some(
+        (p) => p.cloud_id === local.cloud_id || p.local_id === local.local_id
+      );
+      if (!tienePendiente) {
+        await eliminarDocenteLocalFisicamente(local.local_id);
+      }
+    }
+  }
+
+  return { nuevosDetectados };
 }
 
-// Actualizar el cloud_id asignado a un docente creado localmente
-export async function actualizarCloudIdDocenteLocal(
-  localId: number,
-  cloudId: number
+// Mantener compatibilidad con llamadas existentes
+export async function guardarDocentesNubeEnLocal(
+  docentesNube: Docente[]
 ): Promise<void> {
-  const db = await obtenerBaseDatos();
-  await db.runAsync(
-    'UPDATE docentes_local SET cloud_id = ? WHERE local_id = ?',
-    [cloudId, localId]
-  );
+  await reconciliarNubeConLocal(docentesNube);
 }
 
 // ==================================================
 // COLA DE SINCRONIZACIÓN (sync_pendiente)
 // ==================================================
-
 export async function agregarOperacionPendiente(
   operacion: 'CREATE' | 'UPDATE' | 'DELETE',
   localId: number | null,
@@ -299,10 +443,7 @@ export async function agregarOperacionPendiente(
   // CASO 3: Eliminación offline de un docente creado offline que nunca se sincronizó
   // Estrategia: Purgar el CREATE pendiente y eliminar la fila física (nunca se envía a Supabase)
   if (operacion === 'DELETE' && !cloudId && localId) {
-    await db.runAsync(
-      'DELETE FROM sync_pendiente WHERE local_id = ?',
-      [localId]
-    );
+    await db.runAsync('DELETE FROM sync_pendiente WHERE local_id = ?', [localId]);
     await eliminarDocenteLocalFisicamente(localId);
     return;
   }

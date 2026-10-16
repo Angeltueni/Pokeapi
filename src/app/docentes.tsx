@@ -19,11 +19,15 @@ import {
   consultarDocente,
   crearDocente,
   eliminarDocente,
+  guardarIntervaloMonitoreo,
   inicializarRepositorio,
   listarDocentes,
+  marcarDocenteComoVisto,
+  obtenerCantidadDocentesNuevos,
+  obtenerIntervaloMonitoreo,
 } from '@/repositories/docentesRepository';
 import {
-  sincronizarDocentesPendientes,
+  iniciarMonitoreoDocentes,
   suscribirCambiosDeRed,
 } from '@/services/docentesSync';
 
@@ -37,6 +41,10 @@ export default function DocentesScreen() {
   const [cargando, setCargando] = useState(true);
   const [procesando, setProcesando] = useState(false);
   const [error, setError] = useState('');
+
+  // Intervalo de monitoreo de nube (2, 10 o 30 segundos) y contador de nuevos
+  const [intervalo, setIntervalo] = useState<2 | 10 | 30>(10);
+  const [cantidadNuevos, setCantidadNuevos] = useState<number>(0);
 
   // Estado del formulario para Crear / Editar
   const [formulario, setFormulario] = useState<DocenteInput>({
@@ -57,6 +65,9 @@ export default function DocentesScreen() {
       setError('');
       const datos = await listarDocentes();
       setDocentes(datos);
+
+      const cant = await obtenerCantidadDocentesNuevos();
+      setCantidadNuevos(cant);
 
       if (datos.length > 0) {
         if (idSeleccionar !== undefined) {
@@ -84,11 +95,13 @@ export default function DocentesScreen() {
     }
   }
 
-  // Inicialización de SQLite y suscripción a reconexión de red en tiempo real
+  // Inicialización de SQLite, lectura de intervalo persistido y listener de reconexión
   useEffect(() => {
     async function iniciar() {
       try {
         await inicializarRepositorio();
+        const seg = await obtenerIntervaloMonitoreo();
+        setIntervalo(seg as 2 | 10 | 30);
       } catch (err) {
         console.warn('Error en la inicialización del repositorio:', err);
       }
@@ -97,13 +110,12 @@ export default function DocentesScreen() {
 
     iniciar();
 
-    // Listener de reconexión: al pasar de offline a online sincroniza automáticamente
+    // Listener de reconexión: al volver de offline a online sincroniza de inmediato
     const desuscribirRed = suscribirCambiosDeRed(async () => {
       try {
-        await sincronizarDocentesPendientes();
         await cargarDocentes();
       } catch (err) {
-        console.warn('Error al sincronizar tras reconexión:', err);
+        console.warn('Error al refrescar tras reconexión:', err);
       }
     });
 
@@ -111,6 +123,36 @@ export default function DocentesScreen() {
       desuscribirRed();
     };
   }, []);
+
+  // Servicio de Polling con cambio en caliente del intervalo (2s, 10s, 30s)
+  useEffect(() => {
+    const cancelarPolling = iniciarMonitoreoDocentes(intervalo, async () => {
+      try {
+        const datos = await listarDocentes();
+        setDocentes(datos);
+        const cant = await obtenerCantidadDocentesNuevos();
+        setCantidadNuevos(cant);
+
+        setDocente((prev) => {
+          if (!prev) return datos[0] || null;
+          const actualizado = datos.find((d) => d.id === prev.id);
+          return actualizado || datos[0] || null;
+        });
+      } catch (err) {
+        console.warn('Error en tick de monitoreo:', err);
+      }
+    });
+
+    return () => {
+      cancelarPolling();
+    };
+  }, [intervalo]);
+
+  // Cambiar el intervalo de monitoreo en caliente y persistirlo en SQLite
+  async function cambiarIntervalo(seg: 2 | 10 | 30) {
+    setIntervalo(seg);
+    await guardarIntervaloMonitoreo(seg);
+  }
 
   // Seleccionar docente por local_id
   async function seleccionarDocente(localId: number) {
@@ -121,6 +163,22 @@ export default function DocentesScreen() {
       setModo('principal');
     } catch {
       Alert.alert('Error', 'No se pudo cargar el docente seleccionado.');
+    }
+  }
+
+  // Abrir perfil con "Ver más" y marcar el docente como visto (deja de ser NUEVO)
+  async function abrirPerfil() {
+    if (docente) {
+      if (docente.es_nuevo) {
+        await marcarDocenteComoVisto(docente.id);
+        setDocente((prev) => (prev ? { ...prev, es_nuevo: false } : null));
+        setDocentes((prev) =>
+          prev.map((d) => (d.id === docente.id ? { ...d, es_nuevo: false } : d))
+        );
+        const cant = await obtenerCantidadDocentesNuevos();
+        setCantidadNuevos(cant);
+      }
+      setModo('perfil');
     }
   }
 
@@ -226,9 +284,7 @@ export default function DocentesScreen() {
     } catch (err) {
       Alert.alert(
         'Error',
-        err instanceof Error
-          ? err.message
-          : 'No se pudo eliminar el docente.'
+        err instanceof Error ? err.message : 'No se pudo eliminar el docente.'
       );
     } finally {
       setProcesando(false);
@@ -493,6 +549,44 @@ export default function DocentesScreen() {
     <ScrollView contentContainerStyle={styles.pantalla}>
       <Text style={styles.titulo}>Datos de Docentes UNINPAHU</Text>
 
+      {/* SECCIÓN DISCRETA: MONITOREO DE NUBE */}
+      <View style={styles.panelMonitoreo}>
+        <View style={styles.filaMonitoreoHeader}>
+          <View style={styles.filaMonitoreoTitulo}>
+            <Ionicons name="sync-outline" size={18} color="#1565c0" />
+            <Text style={styles.textoMonitoreoTitulo}>Monitoreo de nube:</Text>
+          </View>
+          {cantidadNuevos > 0 && (
+            <View style={styles.badgeContadorNuevos}>
+              <Text style={styles.textoContadorNuevos}>
+                {cantidadNuevos} docente{cantidadNuevos > 1 ? 's' : ''} nuevo{cantidadNuevos > 1 ? 's' : ''}
+              </Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.filaBotonesIntervalo}>
+          {([2, 10, 30] as const).map((seg) => (
+            <Pressable
+              key={seg}
+              style={[
+                styles.botonIntervalo,
+                intervalo === seg && styles.botonIntervaloActivo,
+              ]}
+              onPress={() => cambiarIntervalo(seg)}
+            >
+              <Text
+                style={[
+                  styles.textoIntervalo,
+                  intervalo === seg && styles.textoIntervaloActivo,
+                ]}
+              >
+                {seg} s
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
       {/* Buscador de docentes */}
       <View style={styles.contenedorBuscador}>
         <Ionicons
@@ -528,7 +622,14 @@ export default function DocentesScreen() {
                 style={styles.resultadoDocente}
                 onPress={() => seleccionarDocente(item.id)}
               >
-                <Text style={styles.nombreResultado}>{item.nombre}</Text>
+                <View style={styles.filaResultadoHeader}>
+                  <Text style={styles.nombreResultado}>{item.nombre}</Text>
+                  {item.es_nuevo && (
+                    <View style={styles.badgeNuevo}>
+                      <Text style={styles.textoBadgeNuevo}>NUEVO</Text>
+                    </View>
+                  )}
+                </View>
                 {item.cargo ? (
                   <Text style={styles.cargoResultado}>{item.cargo}</Text>
                 ) : null}
@@ -550,7 +651,14 @@ export default function DocentesScreen() {
       {/* Tarjeta del Docente Seleccionado */}
       {docente ? (
         <>
-          <Text style={styles.nombreResumen}>{docente.nombre}</Text>
+          <View style={styles.filaNombreBadge}>
+            <Text style={styles.nombreResumen}>{docente.nombre}</Text>
+            {docente.es_nuevo && (
+              <View style={styles.badgeNuevoResumen}>
+                <Text style={styles.textoBadgeNuevo}>NUEVO</Text>
+              </View>
+            )}
+          </View>
 
           <View style={styles.tarjetaPrincipal}>
             {docente.imagen ? (
@@ -581,10 +689,7 @@ export default function DocentesScreen() {
 
           {/* Botones de Acción CRUD */}
           <View style={styles.contenedorAccionesCrud}>
-            <Pressable
-              style={styles.botonVerMas}
-              onPress={() => setModo('perfil')}
-            >
+            <Pressable style={styles.botonVerMas} onPress={abrirPerfil}>
               <Ionicons name="eye-outline" size={20} color="white" />
               <Text style={styles.textoBoton}>Ver más</Text>
             </Pressable>
@@ -691,15 +796,71 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
     color: '#1565c0',
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  tituloFormulario: {
-    fontSize: 24,
+  // Panel de Monitoreo de Nube
+  panelMonitoreo: {
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 14,
+  },
+  filaMonitoreoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  filaMonitoreoTitulo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  textoMonitoreoTitulo: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+  },
+  badgeContadorNuevos: {
+    backgroundColor: '#e65100',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  textoContadorNuevos: {
+    color: 'white',
+    fontSize: 12,
     fontWeight: 'bold',
-    textAlign: 'center',
-    color: '#1565c0',
-    marginBottom: 20,
   },
+  filaBotonesIntervalo: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  botonIntervalo: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingVertical: 6,
+    alignItems: 'center',
+  },
+  botonIntervaloActivo: {
+    backgroundColor: '#1565c0',
+    borderColor: '#1565c0',
+  },
+  textoIntervalo: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#555',
+  },
+  textoIntervaloActivo: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  // Buscador
   contenedorBuscador: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -730,10 +891,35 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 8,
   },
+  filaResultadoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   nombreResultado: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#1565c0',
+    flex: 1,
+  },
+  badgeNuevo: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  badgeNuevoResumen: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  textoBadgeNuevo: {
+    color: 'white',
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
   cargoResultado: {
     fontSize: 14,
@@ -767,12 +953,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
+  filaNombreBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
   nombreResumen: {
     fontSize: 22,
     fontWeight: 'bold',
     textAlign: 'center',
     color: '#333',
-    marginBottom: 16,
   },
   tarjetaPrincipal: {
     backgroundColor: 'white',
@@ -905,7 +1097,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
-  // Estilos del Formulario
+  // Formulario
+  tituloFormulario: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    color: '#1565c0',
+    marginBottom: 20,
+  },
   campoFormulario: {
     marginBottom: 14,
   },
