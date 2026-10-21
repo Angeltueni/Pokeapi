@@ -10,7 +10,8 @@ const PORT = process.env.PORT || 3006;
 
 const POKEMON_API_URL = process.env.POKEMON_API_URL || "https://pokeapi-loek.onrender.com";
 const ANIME_API_URL = process.env.ANIME_API_URL || "https://pokeapi-1-dapl.onrender.com";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.6-flash";
 
 app.use(cors());
 app.use(express.json());
@@ -24,21 +25,102 @@ function getGeminiClient() {
   return new GoogleGenAI({ apiKey: apiKey.trim() });
 }
 
-// Extraer mensaje limpio de error sin filtrar secretos
-function extraerMensajeError(err) {
-  if (!err) return "Error desconocido en el servicio de IA";
-  if (typeof err.message === "string") {
-    try {
-      const parsed = JSON.parse(err.message);
-      if (parsed?.error?.message) {
-        return parsed.error.message;
-      }
-    } catch (_) {
-      // No es JSON, continuar
-    }
-    return err.message;
+// Función auxiliar para esperar milisegundos (backoff)
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Detección de errores temporales de Gemini (429, 503, 504, 5xx, saturación de demanda, timeout)
+function esErrorTemporal(err) {
+  if (!err) return false;
+  const status = err.status || err.statusCode || err.code;
+  if (
+    status === 429 ||
+    status === 503 ||
+    status === 504 ||
+    (typeof status === "number" && status >= 500 && status < 600)
+  ) {
+    return true;
   }
-  return String(err);
+
+  const msg = String(err.message || "").toLowerCase();
+  // Errores permanentes: NO deben reintentarse
+  if (
+    msg.includes("api_key_invalid") ||
+    msg.includes("api key not valid") ||
+    msg.includes("permission_denied") ||
+    msg.includes("invalid_argument")
+  ) {
+    return false;
+  }
+
+  // Patrones de saturación o indisponibilidad temporal
+  if (
+    msg.includes("429") ||
+    msg.includes("503") ||
+    msg.includes("504") ||
+    msg.includes("high demand") ||
+    msg.includes("spikes in demand") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("unavailable") ||
+    msg.includes("overloaded") ||
+    msg.includes("try again later") ||
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+// Función reutilizable para llamar a Gemini con reintentos y fallback
+async function generarContenidoConReintentos(ai, { contents, config = {} }) {
+  const maxReintentos = 2; // Máximo 2 reintentos (3 intentos en total para el modelo principal)
+  let ultimoError = null;
+
+  // Intentos con el modelo principal
+  for (let intento = 0; intento <= maxReintentos; intento++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents,
+        config,
+      });
+      return response.text || "";
+    } catch (err) {
+      ultimoError = err;
+      if (!esErrorTemporal(err)) {
+        // Error permanente (ej. 400, 401, 403): no reintentar
+        throw err;
+      }
+      if (intento < maxReintentos) {
+        // Exponential backoff: ~1s en primer reintento, ~2s en segundo reintento
+        const esperaMs = 1000 * Math.pow(2, intento);
+        console.warn(
+          `[Gemini] Intento ${intento + 1} con '${GEMINI_MODEL}' falló temporalmente. Reintentando en ${esperaMs}ms...`
+        );
+        await sleep(esperaMs);
+      }
+    }
+  }
+
+  // Si tras los reintentos continúa fallando por saturación/demanda temporal, intentar con modelo fallback
+  if (GEMINI_FALLBACK_MODEL && esErrorTemporal(ultimoError)) {
+    console.log("Gemini principal saturado, usando fallback:", GEMINI_FALLBACK_MODEL);
+    try {
+      const responseFallback = await ai.models.generateContent({
+        model: GEMINI_FALLBACK_MODEL,
+        contents,
+        config,
+      });
+      return responseFallback.text || "";
+    } catch (errFallback) {
+      console.error("[Gemini Fallback Error]:", errFallback);
+      throw errFallback;
+    }
+  }
+
+  throw ultimoError;
 }
 
 // Configuración OpenAPI / Swagger
@@ -48,7 +130,8 @@ const swaggerOptions = {
     info: {
       title: "Microservicio Pokeanime IA",
       version: "1.0.0",
-      description: "Microservicio Node.js para interactuar con Gemini API de manera pública y restringida a la base de datos de Pokeanime.",
+      description:
+        "Microservicio Node.js para interactuar con Gemini API de manera pública y restringida a la base de datos de Pokeanime.",
     },
     servers: [
       {
@@ -131,7 +214,7 @@ app.get("/", (req, res) => {
  *       400:
  *         description: Parámetro pregunta faltante o vacío
  *       502:
- *         description: Error consultando Gemini
+ *         description: El servicio de inteligencia artificial no está disponible temporalmente
  *       500:
  *         description: Error inesperado del servidor
  */
@@ -154,15 +237,13 @@ app.get("/ia/libre", async (req, res) => {
 
     let respuestaTexto = "";
     try {
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+      respuestaTexto = await generarContenidoConReintentos(ai, {
         contents: pregunta.trim(),
       });
-      respuestaTexto = response.text || "";
     } catch (err) {
+      console.error("Error al consultar Gemini en /ia/libre:", err);
       return res.status(502).json({
-        error: "Error consultando Gemini.",
-        detalle: extraerMensajeError(err),
+        error: "El servicio de inteligencia artificial no está disponible temporalmente.",
       });
     }
 
@@ -172,6 +253,7 @@ app.get("/ia/libre", async (req, res) => {
       modo: "libre",
     });
   } catch (error) {
+    console.error("Error inesperado en /ia/libre:", error);
     res.status(500).json({
       error: "Error inesperado en el servidor.",
     });
@@ -221,7 +303,7 @@ app.get("/ia/libre", async (req, res) => {
  *       400:
  *         description: Parámetro pregunta faltante o vacío
  *       502:
- *         description: Error consultando microservicios internos o Gemini
+ *         description: El servicio de inteligencia artificial no está disponible temporalmente
  *       500:
  *         description: Error inesperado del servidor
  */
@@ -256,9 +338,9 @@ app.get("/ia/pokeanime", async (req, res) => {
         animeRes.json(),
       ]);
     } catch (err) {
+      console.error("Error consultando microservicios internos:", err);
       return res.status(502).json({
         error: "Error consultando microservicios internos.",
-        detalle: err.message || "Fallo de conexión con los microservicios de datos",
       });
     }
 
@@ -303,19 +385,17 @@ ${pregunta.trim()}`;
 
     let respuestaTexto = "";
     try {
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+      respuestaTexto = await generarContenidoConReintentos(ai, {
         contents: promptFinal,
         config: {
-          systemInstruction: systemInstruction,
+          systemInstruction,
           temperature: 0.1,
         },
       });
-      respuestaTexto = response.text || "";
     } catch (err) {
+      console.error("Error al consultar Gemini en /ia/pokeanime:", err);
       return res.status(502).json({
-        error: "Error consultando Gemini.",
-        detalle: extraerMensajeError(err),
+        error: "El servicio de inteligencia artificial no está disponible temporalmente.",
       });
     }
 
@@ -329,6 +409,7 @@ ${pregunta.trim()}`;
       },
     });
   } catch (error) {
+    console.error("Error inesperado en /ia/pokeanime:", error);
     res.status(500).json({
       error: "Error inesperado en el servidor.",
     });
