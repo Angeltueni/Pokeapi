@@ -60,6 +60,15 @@ export default function RootLayout() {
             }}
           />
           <Tabs.Screen
+            name="ia"
+            options={{
+              title: 'IA',
+              tabBarIcon: ({ color, size }) => (
+                <Ionicons name="sparkles" size={size} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
             name="detalles"
             options={{
               href: null,
