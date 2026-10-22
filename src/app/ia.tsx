@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -9,13 +9,47 @@ import {
   View,
 } from 'react-native';
 
-import { preguntarIA, RespuestaIA } from '@/services/iaApi';
+import {
+  ConfiguracionIA,
+  obtenerConfiguracionIA,
+  preguntarIA,
+  ProveedorIA,
+  RespuestaIA,
+  TimeoutIA,
+} from '@/services/iaApi';
+
+const TIMEOUT_OPCIONES: TimeoutIA[] = [20, 40, 80, 160];
 
 export default function IAScreen() {
   const [pregunta, setPregunta] = useState('');
   const [respuesta, setRespuesta] = useState<RespuestaIA | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [proveedor, setProveedor] = useState<ProveedorIA>('gemini');
+  const [timeout, setTimeout] = useState<TimeoutIA>(40);
+  const [configuracion, setConfiguracion] = useState<ConfiguracionIA | null>(null);
+
+  useEffect(() => {
+    let montado = true;
+    obtenerConfiguracionIA().then((cfg) => {
+      if (montado && cfg) {
+        setConfiguracion(cfg);
+        if (cfg.proveedorPorDefecto) {
+          setProveedor(cfg.proveedorPorDefecto);
+        }
+        if (cfg.timeoutPorDefecto) {
+          setTimeout(cfg.timeoutPorDefecto);
+        }
+      }
+    });
+    return () => {
+      montado = false;
+    };
+  }, []);
+
+  const groqInfo = configuracion?.proveedores.find((p) => p.id === 'groq');
+  const groqDisponible = groqInfo ? groqInfo.disponible : true;
 
   const handlePreguntar = async () => {
     const textoLimpio = pregunta.trim();
@@ -28,7 +62,7 @@ export default function IAScreen() {
     setError(null);
 
     try {
-      const data = await preguntarIA(textoLimpio);
+      const data = await preguntarIA(textoLimpio, proveedor, timeout);
       setRespuesta(data);
     } catch (err: any) {
       setError(err?.message || 'Error al comunicarse con el asistente de IA.');
@@ -45,7 +79,83 @@ export default function IAScreen() {
       </Text>
 
       <View style={styles.contenedorInput}>
-        <Text style={styles.label}>Pregunta:</Text>
+        {/* Selector de Proveedor */}
+        <Text style={styles.label}>Proveedor de IA:</Text>
+        <View style={styles.grupoBotones}>
+          <Pressable
+            style={[
+              styles.opcionBoton,
+              proveedor === 'gemini' && styles.opcionBotonActivo,
+              cargando && styles.opcionBotonDeshabilitado,
+            ]}
+            onPress={() => setProveedor('gemini')}
+            disabled={cargando}
+          >
+            <Text
+              style={[
+                styles.textoOpcionBoton,
+                proveedor === 'gemini' && styles.textoOpcionBotonActivo,
+              ]}
+            >
+              Gemini
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[
+              styles.opcionBoton,
+              proveedor === 'groq' && styles.opcionBotonActivo,
+              (!groqDisponible || cargando) && styles.opcionBotonDeshabilitado,
+            ]}
+            onPress={() => {
+              if (groqDisponible) {
+                setProveedor('groq');
+              }
+            }}
+            disabled={!groqDisponible || cargando}
+          >
+            <Text
+              style={[
+                styles.textoOpcionBoton,
+                proveedor === 'groq' && styles.textoOpcionBotonActivo,
+                !groqDisponible && styles.textoOpcionBotonDesactivado,
+              ]}
+            >
+              {groqDisponible ? 'Groq' : 'Groq (No configurado)'}
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* Selector de Timeout */}
+        <Text style={[styles.label, { marginTop: 12 }]}>Tiempo de espera:</Text>
+        <View style={styles.grupoBotones}>
+          {TIMEOUT_OPCIONES.map((opc) => {
+            const activo = timeout === opc;
+            return (
+              <Pressable
+                key={opc}
+                style={[
+                  styles.opcionBotonTimeout,
+                  activo && styles.opcionBotonActivo,
+                  cargando && styles.opcionBotonDeshabilitado,
+                ]}
+                onPress={() => setTimeout(opc)}
+                disabled={cargando}
+              >
+                <Text
+                  style={[
+                    styles.textoOpcionBoton,
+                    activo && styles.textoOpcionBotonActivo,
+                  ]}
+                >
+                  {opc} s
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={[styles.label, { marginTop: 14 }]}>Pregunta:</Text>
         <TextInput
           style={styles.input}
           placeholder="Ej: ¿Cuánto pesa Gengar?"
@@ -84,7 +194,9 @@ export default function IAScreen() {
         {cargando ? (
           <View style={styles.cargandoContenedor}>
             <ActivityIndicator size="large" color="#1e88e5" />
-            <Text style={styles.mensajeCargando}>Consultando con la IA...</Text>
+            <Text style={styles.mensajeCargando}>
+              Consultando con {proveedor === 'gemini' ? 'Gemini' : 'Groq'} (máx {timeout}s)...
+            </Text>
           </View>
         ) : respuesta ? (
           <View style={styles.contenidoRespuesta}>
@@ -95,10 +207,25 @@ export default function IAScreen() {
                 {respuesta.contexto.personajes} personajes de Anime.
               </Text>
             ) : null}
+
+            {/* Metadatos de la respuesta requeridos */}
+            <View style={styles.contenedorMetadatos}>
+              <Text style={styles.textoMetadato}>
+                IA utilizada: <Text style={styles.valorMetadato}>{respuesta.proveedor || proveedor}</Text>
+              </Text>
+              <Text style={styles.textoMetadato}>
+                Tiempo configurado: <Text style={styles.valorMetadato}>{respuesta.timeout || timeout} segundos</Text>
+              </Text>
+              {respuesta.tiempoTotalMs ? (
+                <Text style={styles.textoMetadato}>
+                  Tiempo de respuesta real: <Text style={styles.valorMetadato}>{(respuesta.tiempoTotalMs / 1000).toFixed(2)} s</Text>
+                </Text>
+              ) : null}
+            </View>
           </View>
         ) : (
           <Text style={styles.placeholderRespuesta}>
-            Escribe una pregunta para consultar al asistente.
+            Selecciona el proveedor, el tiempo de espera y escribe una pregunta.
           </Text>
         )}
       </View>
@@ -143,6 +270,56 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#333',
     marginBottom: 8,
+  },
+  grupoBotones: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 4,
+  },
+  opcionBoton: {
+    flex: 1,
+    minWidth: 120,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#ccc',
+    backgroundColor: '#f9f9f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  opcionBotonTimeout: {
+    flex: 1,
+    minWidth: 60,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#ccc',
+    backgroundColor: '#f9f9f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  opcionBotonActivo: {
+    backgroundColor: '#e3f2fd',
+    borderColor: '#1e88e5',
+  },
+  opcionBotonDeshabilitado: {
+    opacity: 0.5,
+  },
+  textoOpcionBoton: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#555',
+  },
+  textoOpcionBotonActivo: {
+    color: '#1e88e5',
+    fontWeight: 'bold',
+  },
+  textoOpcionBotonDesactivado: {
+    color: '#999',
+    fontSize: 12,
   },
   input: {
     backgroundColor: '#fafafa',
@@ -228,6 +405,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#888',
     fontStyle: 'italic',
+  },
+  contenedorMetadatos: {
+    marginTop: 14,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  textoMetadato: {
+    fontSize: 13,
+    color: '#555',
+    marginBottom: 2,
+  },
+  valorMetadato: {
+    fontWeight: 'bold',
+    color: '#1e88e5',
   },
   placeholderRespuesta: {
     color: '#888',
