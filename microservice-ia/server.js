@@ -420,6 +420,100 @@ async function generarConProveedor(proveedor, { systemInstruction, prompt, deadl
   throw err;
 }
 
+// Normalización de texto para comparaciones robustas
+function normalizarTexto(texto) {
+  if (!texto || typeof texto !== "string") return "";
+  return texto
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+const RESPUESTA_NO_ENCONTRADO = "No tengo esa información en la base de datos de Pokeanime.";
+
+/**
+ * Valida si la pregunta está claramente dirigida a un Pokémon o personaje de Anime específico.
+ * Si detecta una entidad y no coincide con los nombres de la BD, retorna existe: false.
+ */
+function validarEntidadConsultada(pregunta, pokemones, personajes) {
+  if (!pregunta || typeof pregunta !== "string") {
+    return { entidadDetectada: false, existe: true };
+  }
+
+  // 1. Recopilar y normalizar nombres permitidos
+  const nombresPermitidos = [
+    ...(Array.isArray(pokemones) ? pokemones.map((p) => p.nombre) : []),
+    ...(Array.isArray(personajes) ? personajes.map((p) => p.nombre) : []),
+  ]
+    .filter(Boolean)
+    .map((n) => normalizarTexto(n));
+
+  // 2. Normalizar la pregunta para análisis de patrones
+  let preguntaNormalizada = normalizarTexto(pregunta);
+
+  // Limpiar signos de interrogación, exclamación y puntuación
+  preguntaNormalizada = preguntaNormalizada
+    .replace(/[¿?¡!.,;:()\[\]"']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Patrones de preguntas dirigidas a entidades específicas
+  const patronesEntidad = [
+    /^(?:quien|quienes)\s+(?:es|son|era|fueron)\s+(.+)$/i,
+    /^(?:cuanto|cuanta)\s+(?:pesa|mide|cuesta)\s+(.+)$/i,
+    /^(?:que|que\s+cosa)\s+(?:sabes|conoces|tienes|puedes\s+decir)\s+(?:de|sobre|acerca\s+de)\s+(.+)$/i,
+    /^(?:hablame|cuentame|dime|explicame)\s+(?:de|sobre|acerca\s+de)\s+(.+)$/i,
+    /^(?:informacion|informacion\s+de|datos|datos\s+de|detalle|detalles|detalles\s+de)\s+(?:de|sobre)?\s*(.+)$/i,
+    /^(?:altura|peso|movimientos|habilidades|tipo|tipos|ataques|historia|descripcion|edad|rol|anime)\s+(?:de|del|para)\s+(.+)$/i,
+    /^(?:dame|muestra|muestrame)\s+(?:informacion|datos|el\s+peso|la\s+altura|los\s+detalles)\s+(?:de|del|sobre)\s+(.+)$/i,
+    /^(?:como\s+se\s+llama|conoces\s+a|sabes\s+quien\s+es)\s+(.+)$/i,
+  ];
+
+  // Palabras generales que no corresponden a entidades individuales
+  const palabrasGenerales = [
+    "pokemon", "pokemones", "personaje", "personajes", "anime", "animes",
+    "todos", "cada", "ellos", "ellas", "ambos", "los", "las", "unos", "unas",
+    "la", "el", "base", "datos", "registrados", "disponibles", "lista",
+    "mas", "menos", "mejor", "peor", "mayor", "menor", "pesado", "liviano",
+    "alto", "bajo", "fuerte", "debil"
+  ];
+
+  for (const patron of patronesEntidad) {
+    const match = preguntaNormalizada.match(patron);
+    if (match && match[1]) {
+      let posibleEntidad = match[1].trim();
+
+      // Limpiar artículos o conectores iniciales como "el", "la", "los", "las", "un", "una"
+      posibleEntidad = posibleEntidad.replace(/^(?:el|la|los|las|un|una|al|del)\s+/i, "").trim();
+
+      // Si la entidad extraída es una consulta general (ej: "pokemon", "personajes registrados"), no bloquear
+      const palabrasDeEntidad = posibleEntidad.split(/\s+/);
+      const esConsultaGeneral = palabrasDeEntidad.every((p) => palabrasGenerales.includes(p));
+      if (esConsultaGeneral) {
+        continue;
+      }
+
+      // Comparar contra los nombres permitidos
+      const coincide = nombresPermitidos.some((nombrePermitido) => {
+        return (
+          nombrePermitido === posibleEntidad ||
+          posibleEntidad.startsWith(nombrePermitido + " ") ||
+          posibleEntidad.endsWith(" " + nombrePermitido)
+        );
+      });
+
+      return {
+        entidadDetectada: true,
+        entidad: posibleEntidad,
+        existe: coincide,
+      };
+    }
+  }
+
+  return { entidadDetectada: false, existe: true };
+}
+
 // Configuración OpenAPI / Swagger
 const swaggerOptions = {
   definition: {
@@ -813,6 +907,25 @@ app.get("/ia/pokeanime", async (req, res) => {
       console.error("[IA] Fallo en microservicios internos tras agotar reintentos:", err.message || err);
       return res.status(502).json({
         error: "No fue posible consultar temporalmente los datos de Pokeanime.",
+      });
+    }
+
+    // Validación determinista en backend: si la pregunta se dirige específicamente
+    // a un Pokémon o personaje que no existe en nuestra base de datos, responder
+    // directamente sin invocar Gemini ni Groq.
+    const validacion = validarEntidadConsultada(pregunta, pokemones, personajes);
+    if (validacion.entidadDetectada && !validacion.existe) {
+      console.log(`[IA] Entidad específica "${validacion.entidad}" no encontrada en la BD. Respuesta preventiva aplicada.`);
+      return res.json({
+        pregunta: pregunta.trim(),
+        respuesta: RESPUESTA_NO_ENCONTRADO,
+        modo: "pokeanime",
+        proveedor,
+        timeout: timeoutSegundos,
+        contexto: {
+          pokemones: Array.isArray(pokemones) ? pokemones.length : 0,
+          personajes: Array.isArray(personajes) ? personajes.length : 0,
+        },
       });
     }
 
