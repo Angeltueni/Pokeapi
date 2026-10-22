@@ -321,6 +321,7 @@ async function generarConGemini({ systemInstruction, prompt, deadline }) {
         timeoutPromise,
       ]).finally(() => clearTimeout(timerId));
 
+      
       console.log(`[IA] Fallback OK`);
       return responseFallback.text || "";
     } catch (errFallback) {
